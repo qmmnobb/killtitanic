@@ -1,0 +1,437 @@
+"""
+Created on Mon May  7 16:57:00 2018
+
+@author: Qmh
+"""
+#import sys
+#sys.setdefaultencoding('utf-8')
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import learning_curve
+import matplotlib.pyplot as plt
+from sklearn.cross_validation import KFold
+import xgboost as xgb
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, GradientBoostingClassifier, ExtraTreesClassifier
+test =pd.read_csv("C:/Users/Qmh/Desktop/Kaggle/test.csv")
+train =pd.read_csv("C:/Users/Qmh/Desktop/Kaggle/Train.csv")
+# =============================================================================
+# #Fare(补缺，归一化)
+# test.loc[test.Fare.isnull(),'Fare']=test[(test.Pclass==1)&(test.Embarked=='S')&(test.Sex=='male')].dropna().Fare.mean()
+# import sklearn.preprocessing as preprocessing
+# scaler = preprocessing.StandardScaler()
+# fare_scale_param = scaler.fit(train['Fare'].values.reshape(-1, 1))
+# train.Fare = fare_scale_param.transform(train['Fare'].values.reshape(-1, 1))
+# test.Fare = fare_scale_param.transform(test['Fare'].values.reshape(-1, 1))
+# 
+# =============================================================================
+#特征工程开始了！
+combine_df=pd.concat([train,test])
+#分析名字特征
+#长度
+combine_df['Name_Len']=combine_df['Name'].apply(lambda x: len(x))
+combine_df['Name_Len']=pd.qcut(combine_df['Name_Len'],5) 
+#称谓(用了个函数)（目测此处可以用个transform）
+combine_df['Title']=combine_df['Name'].apply(lambda x: x.split(',')[1]).apply(lambda x: x.split('.')[0])
+combine_df['Title'] = combine_df['Title'].apply(lambda s: s.replace('Don','Mr').replace('Dona','Mr').replace('Major','Mr').replace('Capt','Mr').replace( 'Jonkheer','Mr').replace('Rev','Mr').replace('Col','Mr').replace('Sir','Mr').replace('Dr','Mr'))
+combine_df['Title'] = combine_df['Title'].apply(lambda s: s.replace('Mlle','Mr').replace('Ms', 'Miss'))
+combine_df['Title'] = combine_df['Title'].apply(lambda s: s.replace('the Countess','Mrs').replace('Mme','Mrs').replace('Lady','Mrs').replace('Dr', 'Mrs'))
+#test_x = pd.concat([test[['SibSp','Parch','Fare']], pd.get_dummies(test[['Pclass', 'Sex','Cabin','Embarked', 'Age_map']])],axis=1)
+df=pd.get_dummies(combine_df[['Title','Name_Len']])
+
+#drop(["PassengerId","Survived"], axis=1)
+#特殊家族
+combine_df['Fname'] = combine_df['Name'].apply(lambda x:x.split(',')[0])
+combine_df['Familysize']=combine_df['SibSp']+combine_df['Parch']
+dead_female_Fname=list(set(combine_df[(combine_df.Sex=='female') & (combine_df.Age>=12)
+                              & (combine_df.Survived==0) & (combine_df.Familysize>1)]['Fname'].values))
+survive_male_Fname = list(set(combine_df[(combine_df.Sex=='male') & (combine_df.Age>=12)
+                              & (combine_df.Survived==1) & (combine_df.Familysize>1)]['Fname'].values))
+combine_df['Dead_female_family']=np.where(combine_df['Fname'].isin(dead_female_Fname),1,0)           #numpy.where()函数是三元表达式x if condition else y的矢量化版本
+combine_df['Survive_male_family'] = np.where(combine_df['Fname'].isin(survive_male_Fname),1,0)       #生成新列
+#combine_df = pd.concat([combine_df, pd.get_dummies(train[['Dead_female_family','Survive_male_family']])],axis=1)
+
+#Familysize
+combine_df['Familysize']=np.where(combine_df['Familysize']==0,'solo',np.where(combine_df['Familysize']<=3,'normal','big'))
+df=pd.get_dummies(combine_df['Familysize'],prefix='Familysize')
+combine_df=pd.concat([combine_df,df],axis=1).drop(['SibSp','Parch','Familysize'])
+combine_df = combine_df.drop(['Name','Fname','Familysize'],axis=1)
+#对Age分析————填补和划分————————transform推广到各行
+#combine_df['Age']=combine_df.groupby(['Title','Pclass'])['Age'].transform(lambda x: x.fillna(x.median()))  
+#搞个RF预测Age吧~
+
+#combine_df=combine_df.drop('Title',axis=1)
+combine_df=pd.concat([combine_df,df],axis=1).drop(['Title','Name_Len'],axis=1)
+combine_df['IsChild']=np.where(combine_df['Age']<=12,1,0)
+combine_df['Age']=pd.cut(combine_df['Age'],5)
+df = pd.get_dummies(combine_df['Age'],prefix='Age')
+combine_df = pd.concat([combine_df,df],axis=1).drop('Age',axis=1)
+
+# Mapping Age
+'''  dataset.loc[ dataset['Age'] <= 16, 'Age'] = 0
+    dataset.loc[(dataset['Age'] > 16) & (dataset['Age'] <= 32), 'Age'] = 1
+    dataset.loc[(dataset['Age'] > 32) & (dataset['Age'] <= 48), 'Age'] = 2
+    dataset.loc[(dataset['Age'] > 48) & (dataset['Age'] <= 64), 'Age'] = 3
+    dataset.loc[ dataset['Age'] > 64, 'Age'] = 4 '''
+
+
+
+
+
+
+
+
+#train.groupby('Age_map')['Survived'].agg(['count','mean'])
+#Ticket           *****************************************怎么得到那种票存活率高的？？
+combine_df['Ticket_Lett']=combine_df['Ticket'].apply(lambda x: str(x)[0])
+combine_df['Ticket_Lett']=combine_df['Ticket_Lett'].apply(lambda x: str(x))     #********************这句不是多余？
+combine_df['High_Survival_Ticket']=np.where(combine_df['Ticket_Lett'].isin(['1', '2', 'P']),1,0)
+combine_df['Low_Survival_Ticket'] = np.where(combine_df['Ticket_Lett'].isin(['A','W','3','7']),1,0)
+#df = pd.get_dummies(combine_df['High_Survival_Ticket'],prefix='High_Survival_Ticket')
+#df = pd.get_dummies(combine_df['Low_Survival_Ticket'],prefix='Low_Survival_Ticket')
+combine_df = pd.concat([combine_df,df],axis=1)
+combine_df=combine_df.drop(['Ticket','Ticket_Lett'],axis=1)
+#Embarked
+combine_df.Embarked = combine_df.Embarked.fillna('S')
+df = pd.get_dummies(combine_df['Embarked'],prefix='Embarked')
+combine_df = pd.concat([combine_df,df],axis=1).drop('Embarked',axis=1)
+#Cabin
+combine_df['Cabin_isNull'] = np.where(combine_df['Cabin'].isnull(),0,1)
+df = pd.get_dummies(combine_df['Cabin_isNull'],prefix='Cabin_isNull')
+combine_df = pd.concat([combine_df,df],axis=1).drop('Cabin',axis=1)
+#Pclass
+df = pd.get_dummies(combine_df['Pclass'],prefix='Pclass')
+combine_df = pd.concat([combine_df,df],axis=1).drop('Pclass',axis=1)
+#Sex
+df = pd.get_dummies(combine_df['Sex'],prefix='Sex')
+combine_df = pd.concat([combine_df,df],axis=1).drop('Sex',axis=1)
+#Fare
+#*************************one-hot和归一化，是不是任选其一？
+combine_df['Fare'] = pd.qcut(combine_df.Fare,3)
+df = pd.get_dummies(combine_df.Fare,prefix='Fare').drop('Fare_(-0.001, 8.662]',axis=1)     #****************为什么删掉？
+combine_df = pd.concat([combine_df,df],axis=1).drop(['Fare','SibSp','Parch'],axis=1)
+
+#one-hot一下
+# train_x = pd.concat([train[['SibSp','Parch','Fare']], pd.get_dummies(train[['Pclass','Sex','Cabin','Embarked','Age_map']])],axis=1)
+# train_y = train.Survived
+# test_x = pd.concat([test[['SibSp','Parch','Fare']], pd.get_dummies(test[['Pclass', 'Sex','Cabin','Embarked', 'Age_map']])],axis=1)
+# 
+# =============================================================================
+#所有特征转化成数值型编码***************还有什么特征不是数值型的？
+features = combine_df.drop(["PassengerId","Survived"], axis=1).columns
+from sklearn.preprocessing import LabelEncoder
+le = LabelEncoder()
+#***************报错
+for feature in features:
+    le = le.fit(combine_df[feature])
+    combine_df[feature] = le.transform(combine_df[feature])
+
+#数据处理
+import numpy as np
+import pandas as pd
+#绘图
+import seaborn as sns
+import matplotlib.pyplot as plt
+#%matplotlib inline
+#各种模型、数据处理方法
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC, LinearSVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.linear_model import Perceptron
+from sklearn.linear_model import SGDClassifier
+from sklearn.tree import DecisionTreeClassifier
+from xgboost import XGBClassifier
+from sklearn.metrics import precision_score
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import GridSearchCV, cross_val_score, StratifiedKFold, learning_curve
+import warnings
+warnings.filterwarnings('ignore')
+
+# =============================================================================
+# #逻辑回归
+# base_line_model = LogisticRegression()
+# #模型的参数设置问题——GridSearchCV就是超参数调优
+# param = {'penalty':['l1','l2'], 
+#         'C':[0.1, 0.5, 1.0,5.0]}
+# grd = GridSearchCV(estimator=base_line_model, param_grid=param, cv=5, n_jobs=3)
+# grd.fit(train_x, train_y)
+# 
+# =============================================================================
+#得到数据
+# =============================================================================
+# X_all = combine_df.iloc[:891,:].drop(["PassengerId","Survived"], axis=1)   #iloc与loc区别loc是根据dataframe的具体标签选取列，而iloc是根据标签所在的位置，从0开始计数。如果你想要选取某一行的数据，可以使用df.loc[[i]]或者df.iloc[[i]]
+# Y_all = combine_df.iloc[:891,:]["Survived"]
+# X_test = combine_df.iloc[891:,:].drop(["PassengerId","Survived"], axis=1)
+# =============================================================================
+# Create 5 objects that represent our 4 models(生成基础模型)
+class SklearnHelper(object):
+    def __init__(self, clf, seed=0, params=None):
+        params['random_state'] = seed
+        self.clf = clf(**params)
+
+    def train(self, x_train, y_train):
+        self.clf.fit(x_train, y_train)
+
+    def predict(self, x):
+        return self.clf.predict(x)
+    
+    def fit(self,x,y):
+        return self.clf.fit(x,y)
+    
+    def feature_importances(self,x,y):
+        print(self.clf.fit(x,y).feature_importances_)
+        
+ntrain = train.shape[0]
+ntest = test.shape[0]
+SEED = 0 # for reproducibility
+NFOLDS = 5 # set folds for out-of-fold prediction
+kf = KFold(ntrain, n_folds= NFOLDS, random_state=SEED)
+
+rf_params = {
+    'n_jobs': -1,
+    'n_estimators': 500,
+     'warm_start': True, 
+     #'max_features': 0.2,
+    'max_depth': 6,
+    'min_samples_leaf': 2,
+    'max_features' : 'sqrt',
+    'verbose': 0
+}
+# Extra Trees Parameters
+et_params = {
+    'n_jobs': -1,
+    'n_estimators':500,
+    #'max_features': 0.5,
+    'max_depth': 8,
+    'min_samples_leaf': 2,
+    'verbose': 0
+}
+# AdaBoost parameters
+ada_params = {
+    'n_estimators': 500,
+    'learning_rate' : 0.75
+}
+# Gradient Boosting parameters
+gb_params = {
+    'n_estimators': 500,
+     #'max_features': 0.2,
+    'max_depth': 5,
+    'min_samples_leaf': 2,
+    'verbose': 0
+}
+# Support Vector Classifier parameters 
+svc_params = {
+    'kernel' : 'linear',
+    'C' : 0.025
+    }
+
+rf = SklearnHelper(clf=RandomForestClassifier, seed=SEED, params=rf_params)
+et = SklearnHelper(clf=ExtraTreesClassifier, seed=SEED, params=et_params)
+ada = SklearnHelper(clf=AdaBoostClassifier, seed=SEED, params=ada_params)
+gb = SklearnHelper(clf=GradientBoostingClassifier, seed=SEED, params=gb_params)
+svc = SklearnHelper(clf=SVC, seed=SEED, params=svc_params)
+# Create Numpy arrays of train, test and target ( Survived) dataframes to feed into our models
+x_train = combine_df.iloc[:891,:].drop(["PassengerId","Survived"], axis=1).values   #iloc与loc区别loc是根据dataframe的具体标签选取列，而iloc是根据标签所在的位置，从0开始计数。如果你想要选取某一行的数据，可以使用df.loc[[i]]或者df.iloc[[i]]
+y_train = combine_df.iloc[:891,:]["Survived"].ravel() 
+x_test = combine_df.iloc[891:,:].drop(["PassengerId","Survived"], axis=1).values
+
+
+
+
+
+
+
+# =============================================================================
+# y_train = train['Survived'].ravel()                  #ndarray类型
+# train = train.drop(['Survived'], axis=1)
+# x_train = train.values # Creates an array of the train data 
+# x_test = test.values # Creats an array of the test data
+# 
+# =============================================================================
+# Output of the First level Predictions            Create our OOF train and test predictions. These base results will be used as new features
+def get_oof(clf, x_train, y_train, x_test):
+    oof_train = np.zeros((ntrain,))#生成这个干嘛
+    oof_test = np.zeros((ntest,))
+    oof_test_skf = np.empty((NFOLDS, ntest))
+
+    for i, (train_index, test_index) in enumerate(kf):#enumerate枚举
+        x_tr = x_train[train_index]
+        y_tr = y_train[train_index]
+        x_te = x_train[test_index]
+
+        clf.train(x_tr, y_tr)
+
+        oof_train[test_index] = clf.predict(x_te)
+        oof_test_skf[i, :] = clf.predict(x_test)
+
+    oof_test[:] = oof_test_skf.mean(axis=0)
+    return oof_train.reshape(-1, 1), oof_test.reshape(-1, 1)#这两是什么鬼鬼
+
+
+et_oof_train, et_oof_test = get_oof(et, x_train, y_train, x_test) # Extra Trees
+rf_oof_train, rf_oof_test = get_oof(rf,x_train, y_train, x_test) # Random Forest
+ada_oof_train, ada_oof_test = get_oof(ada, x_train, y_train, x_test) # AdaBoost 
+gb_oof_train, gb_oof_test = get_oof(gb,x_train, y_train, x_test) # Gradient Boost
+svc_oof_train, svc_oof_test = get_oof(svc,x_train, y_train, x_test) # Support Vector Classifier
+
+x_train = np.concatenate(( et_oof_train, rf_oof_train, ada_oof_train, gb_oof_train, svc_oof_train), axis=1)
+x_test = np.concatenate(( et_oof_test, rf_oof_test, ada_oof_test, gb_oof_test, svc_oof_test), axis=1)
+#Second level learning model via XGBoost
+gbm = xgb.XGBClassifier(
+    #learning_rate = 0.02,
+ n_estimators= 2000,
+ max_depth= 4,
+ min_child_weight= 2,
+ #gamma=1,
+ gamma=0.9,                        
+ subsample=0.8,
+ colsample_bytree=0.8,
+ objective= 'binary:logistic',
+ nthread= -1,
+ scale_pos_weight=1).fit(x_train, y_train)
+predictions = gbm.predict(x_test)
+Y=predictions.astype(int)
+a=test['PassengerId']
+StackingSubmission = pd.DataFrame({ 'PassengerId': a,
+                            'Survived': Y })
+StackingSubmission.to_csv("C:/Users/Qmh/Desktop/Kaggle/2_Submission.csv", index=False)
+
+'''#模型
+lr = LogisticRegression()
+svc = SVC()
+knn = KNeighborsClassifier(n_neighbors = 3)
+dt = DecisionTreeClassifier()
+rf = RandomForestClassifier(n_estimators=300,min_samples_leaf=4,class_weight={0:0.745,1:0.255})
+gbdt = GradientBoostingClassifier(n_estimators=500,learning_rate=0.03,max_depth=3)
+xgbGBDT = XGBClassifier(max_depth=3, n_estimators=300, learning_rate=0.05)
+clfs = [lr, svc, knn, dt, rf, gbdt]
+
+kfold = 10
+cv_results = []
+for classifier in clfs :#*******************xgbGBDT出错及故障
+    cv_results.append(cross_val_score(classifier, X_all, y = Y_all, scoring = "accuracy", cv = kfold, n_jobs=4))
+#作模型效果图
+cv_means = []
+cv_std = []
+for cv_result in cv_results:
+    cv_means.append(cv_result.mean())
+    cv_std.append(cv_result.std())
+
+cv_res = pd.DataFrame({"CrossValMeans":cv_means,"CrossValerrors": cv_std,
+                       "Algorithm":["LR","SVC",'KNN','decision_tree',"random_forest","GBDT"]})#xgbGBDT
+g = sns.barplot("CrossValMeans","Algorithm",data = cv_res, palette="Set3",orient = "h",**{'xerr':cv_std})
+g.set_xlabel("Mean Accuracy")
+g = g.set_title("Cross validation scores")   
+
+
+
+#集成框架
+class Ensemble(object):
+    
+    def __init__(self,estimators):
+        self.estimator_names = []
+        self.estimators = []
+        for i in estimators:
+            self.estimator_names.append(i[0])
+            self.estimators.append(i[1])
+        self.clf = LogisticRegression()
+    
+    def fit(self, train_x, train_y):
+        for i in self.estimators:
+            i.fit(train_x,train_y)
+        x = np.array([i.predict(train_x) for i in self.estimators]).T
+        y = train_y
+        self.clf.fit(x, y)
+    
+    def predict(self,x):
+        x = np.array([i.predict(x) for i in self.estimators]).T
+        #print(x)
+        return self.clf.predict(x)
+        
+    
+    def score(self,x,y):
+        s = precision_score(y,self.predict(x))
+        return s
+
+
+bag = Ensemble([('lr',lr),('rf',rf),('svc',svc),('gbdt',gbdt)])
+score = 0
+for i in range(0,10):
+    num_test = 0.20
+    X_train, X_cv, Y_train, Y_cv = train_test_split(X_all, Y_all, test_size=num_test)
+    bag.fit(X_train, Y_train)
+    Y_test = bag.predict(X_test)
+    acc_xgb = round(bag.score(X_cv, Y_cv) * 100, 2)
+    score+=acc_xgb
+print(score/1000)  #0.8786
+
+#交叉验证
+def get_oof(clf, x_train, y_train, x_test):
+    oof_train = np.zeros((ntrain,))
+    oof_test = np.zeros((ntest,))
+    oof_test_skf = np.empty((NFOLDS, ntest))
+
+    for i, (train_index, test_index) in enumerate(kf):
+        x_tr = x_train[train_index]
+        y_tr = y_train[train_index]
+        x_te = x_train[test_index]
+
+        clf.train(x_tr, y_tr)
+
+        oof_train[test_index] = clf.predict(x_te)
+        oof_test_skf[i, :] = clf.predict(x_test)
+
+    oof_test[:] = oof_test_skf.mean(axis=0)
+    return oof_train.reshape(-1, 1), oof_test.reshape(-1, 1)
+'''
+
+
+
+
+
+
+
+
+#画出学习曲线
+# =============================================================================
+# def plot_learning_curve(clf, title, X, y, ylim=None, cv=None, n_jobs=3, train_sizes=np.linspace(.05, 1., 5)):
+#     train_sizes, train_scores, test_scores = learning_curve(
+#         clf, X, y, train_sizes=train_sizes)
+#     train_scores_mean = np.mean(train_scores, axis=1)
+#     train_scores_std = np.std(train_scores, axis=1)
+#     test_scores_mean = np.mean(test_scores, axis=1)
+#     test_scores_std = np.std(test_scores, axis=1)
+#     
+#     ax = plt.figure().add_subplot(111)
+#     ax.set_title(title)
+#     if ylim is not None:
+#         ax.ylim(*ylim)
+#     ax.set_xlabel(u"train_num_of_samples")
+#     ax.set_ylabel(u"score")
+# 
+#     ax.fill_between(train_sizes, train_scores_mean - train_scores_std, train_scores_mean + train_scores_std, 
+#                      alpha=0.1, color="b")
+#     ax.fill_between(train_sizes, test_scores_mean - test_scores_std, test_scores_mean + test_scores_std, 
+#                      alpha=0.1, color="r")
+#     ax.plot(train_sizes, train_scores_mean, 'o-', color="b", label=u"train score")
+#     ax.plot(train_sizes, test_scores_mean, 'o-', color="r", label=u"testCV score")
+# 
+#     ax.legend(loc="best")
+# 
+#     midpoint = ((train_scores_mean[-1] + train_scores_std[-1]) + (test_scores_mean[-1] - test_scores_std[-1])) / 2
+#     diff = (train_scores_mean[-1] + train_scores_std[-1]) - (test_scores_mean[-1] - test_scores_std[-1])
+#     return midpoint, diff
+# plot_learning_curve(bag, u"learning_rate", X_all, Y_all)
+# 
+# =============================================================================
+#结果
+#Y=int(bag.predict(X_test))
+'''Y=bag.predict(X_test).astype(int)#直接用int()是单个数字
+gender_submission = pd.DataFrame({'PassengerId':test.iloc[:,0],'Survived':Y})
+gender_submission.to_csv('C:/Users/Qmh/Desktop/Kaggle/1_submission.csv', index=None)
+'''
